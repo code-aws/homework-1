@@ -1,0 +1,89 @@
+import json
+import boto3
+import random
+
+# Initialize AWS resources
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('yelp-restaurants') 
+sqs = boto3.client('sqs')
+queue_url = ''  # Add your queue URL here
+sns = boto3.client('sns')
+sns_arn = ''  # Add your SNS ARN here
+
+def get_random_restaurants(cuisine):
+    # Scan the DynamoDB 
+    response = table.scan(
+        FilterExpression='Cuisine = :cuisine',
+        ExpressionAttributeValues={
+            ':cuisine': cuisine
+        }
+    )
+    restaurants = response.get('Items', [])
+    
+    if len(restaurants) > 3:
+        return random.sample(restaurants, 3)
+    return restaurants
+
+def lambda_handler(event, context):
+    # Pull a message from the SQS queue
+    response = sqs.receive_message(
+        QueueUrl=queue_url,
+        MaxNumberOfMessages=1,
+        WaitTimeSeconds=10
+    )
+    
+    messages = response.get('Messages', [])
+    
+    if not messages:
+        return {
+            'statusCode': 200,
+            'body': json.dumps('No messages in the queue')
+        }
+
+    message = messages[0]
+    body = json.loads(message['Body'])
+
+    # Extract slot values from the message
+    cuisine = body.get('Cuisine')
+    location = body.get('Location')
+    email = body.get('Email')
+    people = body.get('People')
+    time = body.get('Time')
+
+    restaurants = get_random_restaurants(cuisine)
+    
+    if restaurants:
+        restaurant_details = [
+            f"{i}. {restaurant.get('Name', 'Unnamed Restaurant')}, located at {restaurant.get('DisplayAddress', 'Address not available')}"
+            for i, restaurant in enumerate(restaurants, start=1)
+        ]
+
+        restaurant_list = "\n".join(restaurant_details)
+        message_content = (
+            f"Hello! Here are the {cuisine} restaurant suggestions in {location} for {people} people at {time}:\n"
+            f"{restaurant_list}\nEnjoy your meal!"
+        )
+    else:
+        message_content = f"No {cuisine} restaurants found."
+
+    # Send the recommendations via SNS
+    response = sns.publish(
+        TopicArn=sns_arn,
+        Message=message_content,
+        Subject="Restaurant Recommendations"
+    )
+
+    print(response)
+    print(message_content)
+
+    # Delete the processed message from the SQS queue
+    sqs.delete_message(
+        QueueUrl=queue_url,
+        ReceiptHandle=message['ReceiptHandle']
+    )
+
+    # Return a success message
+    return {
+        'statusCode': 200,
+        'body': json.dumps('Message processed successfully')
+    }
