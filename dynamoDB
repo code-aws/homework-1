@@ -1,0 +1,50 @@
+import boto3
+import requests
+import json
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('yelp-restaurants') #table Name
+url = "https://api.yelp.com/v3/businesses/search"
+API_KEY = 'your_API_Key' 
+headers = {
+ 'Authorization': f'Bearer {API_KEY}'
+}
+cuisines = ["Italian", "American", "Mexican", "Chinese", "Japanese", "Indian"]
+location = "Detroit"
+def lambda_handler(event, context):
+ for cuisine in cuisines:
+ params = {
+ 'location': location,
+ 'term': cuisine,
+ 'limit': 50
+ }
+ # API request
+ response = requests.get(url, headers=headers, params=params)
+ if response.status_code == 200:
+ businesses = response.json().get('businesses', [])
+
+ # Insert into DynamoDB
+ for business in businesses:
+ restaurant_id = business['id']
+ name = business['name']
+ display_address = " ".join(business['location']['display_address'])
+ rating = business['rating']
+ zip_code = business['location'].get('zip_code', 'N/A')
+ city = business['location'].get('city', 'N/A')
+ # Insert restaurant data into DynamoDB
+ table.put_item(
+ Item={
+ 'RestaurantID': restaurant_id,
+ 'Name': name,
+ 'DisplayAddress': display_address,
+ 'Rating': str(rating),
+ 'ZipCode': zip_code,
+ 'Cuisine': cuisine,
+ 'City': city
+ }
+ )
+ else:
+ print("Error")
+ return {
+ 'statusCode': 200,
+ 'body': json.dumps('Data inserted into DynamoDB')
+ }
