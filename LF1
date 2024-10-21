@@ -1,0 +1,89 @@
+
+import json
+import boto3
+import logging
+
+
+# Set up logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+
+def lambda_handler(event, context):
+    # Log the full event received from Lex
+    logger.info(f"Event received from Lex: {json.dumps(event)}")
+
+    # Initialize the DynamoDB resource
+    dynamodb = boto3.resource('dynamodb')
+    table = dynamodb.Table('yelp-restaurants')
+
+    # Initialize SQS client
+    sqs_client = boto3.client('sqs')
+
+    # SQS Queue URL (Replace with your actual queue URL)
+    sqs_queue_url = ''
+
+    # Extract slots from the event received from Lex
+    slots = event['currentIntent']['slots']
+    logger.info(f"Slots: {slots}")  # Log slots for debugging
+
+    location = slots.get('Location')
+    cuisine = slots.get('Cuisine')  # Ensure this matches the Lex slot name
+    dining_time = slots.get('time')
+    num_people = slots.get('numberofpeople')
+    phone_number = slots.get('number')
+
+    # Log the cuisine value being retrieved
+    logger.info(f"Cuisine value from slots: {cuisine}")
+
+    if cuisine is None:
+        response_message = "Cuisine not provided. Please specify a cuisine."
+    else:
+        try:
+            response = table.scan(
+                FilterExpression='Cuisine = :cuisine',
+                ExpressionAttributeValues={':cuisine': cuisine}
+            )
+
+            # Get the restaurant suggestions from the response
+            restaurant_suggestions = response.get('Items', [])
+            logger.info(f"Restaurant suggestions: {restaurant_suggestions}")
+
+            if restaurant_suggestions:
+                limited_suggestions = restaurant_suggestions[:3]
+                
+                response_message = f"Here are some {cuisine} restaurant suggestions in {location} for {num_people} people at {dining_time}:\n"
+                for idx, restaurant in enumerate(limited_suggestions, 1):
+                    response_message += f"{idx}. {restaurant['Name']}, located at {restaurant['Location']}\n"
+                
+                # Format the message for SQS
+                sqs_message = {
+                    'phone_number': phone_number,
+                    'message': format_sns_message(convert_decimals(limited_suggestions))
+                }
+
+                # Send the message to SQS
+                try:
+                    response = sqs_client.send_message(
+                        QueueUrl=sqs_queue_url,
+                        MessageBody=json.dumps(sqs_message)
+                    )
+                    logger.info(f"Message sent to SQS successfully: {response}")
+                except Exception as e:
+                    logger.error(f"Error sending message to SQS: {e}")
+            else:
+                response_message = f"Sorry, I couldn't find any {cuisine} restaurants in {location}."
+        
+        except Exception as e:
+            response_message = f"An error occurred while retrieving restaurant suggestions: {str(e)}"
+
+    return {
+        'dialogAction': {
+            'type': 'Close',
+            'fulfillmentState': 'Fulfilled',
+            'message': {
+                'contentType': 'PlainText',
+                'content': response_message
+            }
+        }
+    }
